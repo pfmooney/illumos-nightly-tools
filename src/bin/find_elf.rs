@@ -83,6 +83,10 @@ struct ObjDetail {
     has_verdef: bool,
 }
 
+/// Represents a directory (behind a symlink) to crawl.  If the path itself is the symlink, its
+/// target (as the Option-al PathBuf) is included.
+type LinkedDir = (PathBuf, Option<PathBuf>);
+
 /// Given a directory (`path`), inspect the type of each child.  Files are handled simply by
 /// running `each_file` function upon them.  Directories and symlinks (to directories) are
 /// collected in respective lists to be queued for subsequent processing.  Symlinks to files are
@@ -91,13 +95,13 @@ fn dir_children<F, G>(
     path: PathBuf,
     each_file: &mut F,
     each_linked: &mut G,
-) -> Result<(Vec<PathBuf>, Vec<(PathBuf, Option<PathBuf>)>)>
+) -> Result<(Vec<PathBuf>, Vec<LinkedDir>)>
 where
     F: FnMut(PathBuf, &Metadata),
     G: FnMut(PathBuf, &Metadata),
 {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    let mut link_dirs: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut link_dirs: Vec<LinkedDir> = Vec::new();
 
     for entry in path.read_dir()?.filter_map(|e| e.ok()) {
         let child = entry.path();
@@ -145,7 +149,7 @@ fn linked_children<F>(
     path: PathBuf,
     link_target: Option<PathBuf>,
     each_linked: &mut F,
-) -> Result<Vec<(PathBuf, Option<PathBuf>)>>
+) -> Result<Vec<LinkedDir>>
 where
     F: FnMut(PathBuf, &Metadata),
 {
@@ -192,7 +196,7 @@ where
     G: FnMut(PathBuf, &Metadata),
 {
     let mut dirq: Vec<PathBuf> = Vec::new();
-    let mut linkq: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut linkq: Vec<LinkedDir> = Vec::new();
 
     dirq.push(start.to_path_buf());
 
@@ -247,6 +251,8 @@ fn collate_results(
     let mut result = BTreeMap::new();
     for (id, (detail, mut hard_links)) in file_detail {
         if expand_aliases {
+            // Copy file detail for all hard and symbolic links as if they were all separate files,
+            // rather than aliases to the same object.
             for hard_link in hard_links {
                 result.insert(hard_link, (detail, Vec::new()));
             }
