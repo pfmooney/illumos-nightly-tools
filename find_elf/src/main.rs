@@ -1,70 +1,35 @@
 use std::collections::BTreeMap;
-use std::fs::{File, Metadata};
+use std::fs::Metadata;
 use std::io::{Error, ErrorKind, Result};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use goblin::elf::dynamic::DT_VERDEF;
 use goblin::elf::header;
 use goblin::elf::Elf;
 use structopt::StructOpt;
+use utils::RoMMap;
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "options")]
 struct Opts {
-    /// expand symlink aliases
+    /// Expand symlink aliases
     #[structopt(short = "a")]
     expand_alias: bool,
 
-    /// use filename at node to speed search
+    /// Use filename at node to speed search
     #[structopt(short = "f")]
     filename_heuristic: bool,
 
-    /// report relative paths
+    /// Report relative paths
     #[structopt(short = "r")]
     relative: bool,
 
-    /// only remote sharable (ET_DYN) objects
+    /// Only remote sharable (ET_DYN) objects
     #[structopt(short = "s")]
     only_remote: bool,
 
-    #[structopt(parse(from_os_str), name = "PATH", required = true)]
+    #[structopt(parse(from_os_str), name = "DIR or PATH", required = true)]
     path: PathBuf,
-}
-
-struct MMap {
-    ptr: std::ptr::NonNull<u8>,
-    size: usize,
-}
-
-impl MMap {
-    fn new(path: impl AsRef<Path>, len: usize) -> Result<Self> {
-        let fp = File::open(path)?;
-        let fd = fp.as_raw_fd();
-        unsafe {
-            let prot = libc::PROT_READ;
-            let flags = libc::MAP_SHARED;
-            let res = libc::mmap(std::ptr::null_mut(), len, prot, flags, fd, 0);
-            if let Some(ptr) = std::ptr::NonNull::new(res as *mut u8) {
-                Ok(Self { ptr, size: len })
-            } else {
-                Err(Error::last_os_error())
-            }
-        }
-    }
-
-    fn take(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ref(), self.size) }
-    }
-}
-
-impl Drop for MMap {
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.ptr.as_ptr() as *mut core::ffi::c_void, self.size);
-        }
-    }
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
@@ -83,14 +48,15 @@ struct ObjDetail {
     has_verdef: bool,
 }
 
-/// Represents a directory (behind a symlink) to crawl.  If the path itself is the symlink, its
-/// target (as the Option-al PathBuf) is included.
+/// Represents a directory (behind a symlink) to crawl.  If the path itself is
+/// the symlink, its target (as the Option-al PathBuf) is included.
 type LinkedDir = (PathBuf, Option<PathBuf>);
 
-/// Given a directory (`path`), inspect the type of each child.  Files are handled simply by
-/// running `each_file` function upon them.  Directories and symlinks (to directories) are
-/// collected in respective lists to be queued for subsequent processing.  Symlinks to files are
-/// processed immediately with `each_linked`.
+/// Given a directory (`path`), inspect the type of each child.  Files are
+/// handled simply by running `each_file` function upon them.  Directories and
+/// symlinks (to directories) are collected in respective lists to be queued for
+/// subsequent processing.  Symlinks to files are processed immediately with
+/// `each_linked`.
 fn dir_children<F, G>(
     path: PathBuf,
     each_file: &mut F,
@@ -153,7 +119,8 @@ fn linked_children<F>(
 where
     F: FnMut(PathBuf, &Metadata),
 {
-    let self_linked = link_target.map_or(false, |t| t.as_path().eq(".".as_ref() as &Path));
+    let self_linked =
+        link_target.map_or(false, |t| t.as_path().eq(".".as_ref() as &Path));
     let mut children: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
 
     for dirent in path.read_dir()?.filter_map(|e| e.ok()) {
@@ -175,13 +142,16 @@ where
             each_linked(child, &child_meta);
         } else if ft.is_dir() && !self_linked {
             children.push((child, None));
-        } else if ft.is_symlink() && child_meta.file_type().is_dir() && !self_linked {
-            // The original script skipped crawling directories under a self link.
+        } else if ft.is_symlink()
+            && child_meta.file_type().is_dir()
+            && !self_linked
+        {
+            // Original script skipped crawling directories under a self link
             // (For example dirs under '32' -> '.')
             let child_target = if let Ok(l) = child.read_link() {
                 l
             } else {
-                // Directory entries gone missing while we scan are not a concern
+                // Directory entries gone missing during scan are not a concern
                 continue;
             };
             children.push((child, Some(child_target)));
@@ -190,7 +160,11 @@ where
     Ok(children)
 }
 
-fn walk_tree<F, G>(start: &Path, each_file: &mut F, each_linked: &mut G) -> Result<()>
+fn walk_tree<F, G>(
+    start: &Path,
+    each_file: &mut F,
+    each_linked: &mut G,
+) -> Result<()>
 where
     F: FnMut(PathBuf, &Metadata),
     G: FnMut(PathBuf, &Metadata),
@@ -222,7 +196,7 @@ fn query_elf_info(path: &Path, meta: &Metadata) -> Result<ObjDetail> {
         return Err(Error::new(ErrorKind::InvalidData, "file too small"));
     }
 
-    let mapped = MMap::new(path, meta.len() as usize)?;
+    let mapped = RoMMap::new(path, meta.len() as usize)?;
     match Elf::parse(mapped.take()) {
         Ok(obj) => {
             let has_verdef = if let Some(dynamic) = obj.dynamic {
@@ -251,8 +225,8 @@ fn collate_results(
     let mut result = BTreeMap::new();
     for (id, (detail, mut hard_links)) in file_detail {
         if expand_aliases {
-            // Copy file detail for all hard and symbolic links as if they were all separate files,
-            // rather than aliases to the same object.
+            // Copy file detail for all hard and symbolic links as if they were
+            // all separate files, rather than aliases to the same object.
             for hard_link in hard_links {
                 result.insert(hard_link, (detail, Vec::new()));
             }
@@ -287,11 +261,7 @@ fn format_output(
     }
     for (obj_path, (detail, aliases)) in results.iter() {
         let bitness = if detail.is_64bit { "64" } else { "32" };
-        let verdef = if detail.has_verdef {
-            "VERDEF"
-        } else {
-            "NOVERDEF"
-        };
+        let verdef = if detail.has_verdef { "VERDEF" } else { "NOVERDEF" };
         let etype = match detail.etype {
             header::ET_DYN => "DYN",
             header::ET_EXEC => "EXEC",
@@ -328,20 +298,22 @@ fn format_output(
 fn main() {
     let opts = Opts::from_args();
 
-    let mut file_detail: BTreeMap<FileId, (ObjDetail, Vec<PathBuf>)> = BTreeMap::new();
+    let mut file_detail: BTreeMap<FileId, (ObjDetail, Vec<PathBuf>)> =
+        BTreeMap::new();
     let mut alias_list: BTreeMap<FileId, Vec<PathBuf>> = BTreeMap::new();
 
     let mut each_file = |p: PathBuf, m: &Metadata| {
         if opts.filename_heuristic {
-            let is_named_so = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map_or(false, |name_str| {
+            let is_named_so = p.file_name().and_then(|n| n.to_str()).map_or(
+                false,
+                |name_str| {
                     name_str.ends_with(".so") || name_str.contains(".so.")
-                });
+                },
+            );
             let is_executable = (m.permissions().mode() & 0o111) != 0;
 
-            // Skip files which do not have '.so' in the name and are not executable
+            // If a file does not have '.so' in the name and lacks execute
+            // permissions in the filesystem, skip it.
             if !is_named_so && !is_executable {
                 return;
             }
@@ -382,15 +354,18 @@ fn main() {
     };
     if target_meta.file_type().is_dir() {
         // perform the directory walk
-        walk_tree(opts.path.as_path(), &mut each_file, &mut each_linked).unwrap();
+        walk_tree(opts.path.as_path(), &mut each_file, &mut each_linked)
+            .unwrap();
 
-        let results = collate_results(file_detail, alias_list, opts.expand_alias);
+        let results =
+            collate_results(file_detail, alias_list, opts.expand_alias);
         format_output(opts.path.as_path(), opts.relative, results);
     } else {
         // scan just the one file
         each_file(opts.path.clone(), &target_meta);
 
-        let results = collate_results(file_detail, alias_list, opts.expand_alias);
+        let results =
+            collate_results(file_detail, alias_list, opts.expand_alias);
         format_output(opts.path.parent().unwrap(), opts.relative, results);
     };
 }
