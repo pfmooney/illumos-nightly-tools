@@ -1,2 +1,2 @@
 [workspace]
-members = ["find_elf"]
+members = ["find_elf", "check_rtime"]
