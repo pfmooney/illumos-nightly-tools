@@ -11,3 +11,5 @@ structopt = { version = "0.3", default-features = false }
 libc = "0.2"
 goblin = { version = "0.2", features = ["std", "elf32", "elf64"] }
 utils = { path = "../utils" }
+regex = "1.5"
+lazy_static = "1.4"

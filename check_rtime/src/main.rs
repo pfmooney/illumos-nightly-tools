@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use structopt::StructOpt;
 
 mod find_elf;
+mod exceptions;
 
 #[derive(StructOpt, Debug)]
 struct Opts {
