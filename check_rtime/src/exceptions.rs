@@ -117,7 +117,10 @@ fn parse_exception(line: &str) -> Option<(ExcRtime, String)> {
         let ident = ExcRtime::try_from_ident(cap.get(1).unwrap().as_str())?;
         let pattern = RE_MACH
             .replace_all(cap.get(2).unwrap().as_str(), "$1(/amd64|/sparcv9)?");
-        Some((ident, pattern.to_string()))
+        // The shipped exception file escapes spaces as '\ ', which the rust
+        // regex parse is not keen on.  Fix it here.
+        let res = pattern.replace(r"\ ", " ");
+        Some((ident, res))
     } else {
         None
     }
@@ -211,5 +214,30 @@ two
                 "^usr/lib(/amd64|/sparcv9)?/lddstub$".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn full_check() {
+        let input_file = r#"# A few examples from the repo
+SKIP		^usr/lib/libc/			# optimized libc
+EXEC_DATA	^MACH(lib)/ld\.so\.1$
+UNREF_OBJ	/lib.*\ of\ .*libssl3\.so
+UNUSED_RPATH	\$ORIGIN.*\ from\ .*fcode.so
+        "#;
+        let c = Checker::load(input_file.as_bytes());
+        assert!(c.check(ExcRtime::Skip, "usr/lib/libc/foo.so"));
+        assert!(!c.check(ExcRtime::Skip, "usr/lib/baz/bar.foo"));
+        assert!(c.check(ExcRtime::ExecData, "lib/ld.so.1"));
+        assert!(c.check(ExcRtime::ExecData, "lib/amd64/ld.so.1"));
+        assert!(c.check(ExcRtime::ExecData, "lib/sparcv9/ld.so.1"));
+        assert!(!c.check(ExcRtime::ExecData, "lib/mips/ld.so.1"));
+        assert!(c.check(
+            ExcRtime::UnrefObj,
+            "/lib/foo.so thought of /usr/lib/libssl3.so"
+        ));
+        assert!(c.check(
+            ExcRtime::UnusedRpath,
+            "$ORIGIN/lib unused from usr/lib/fcode.so"
+        ));
     }
 }

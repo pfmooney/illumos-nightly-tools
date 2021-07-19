@@ -1,10 +1,14 @@
-use std::io::{Error, Result};
+use std::fs::File;
+use std::io::Result;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
+use exceptions::*;
 use structopt::StructOpt;
+use tempfile::NamedTempFile;
 
-mod find_elf;
 mod exceptions;
+mod find_elf;
 
 #[derive(StructOpt, Debug)]
 struct Opts {
@@ -60,47 +64,176 @@ struct Opts {
     path_list: Vec<PathBuf>,
 }
 
-fn prep(opts: &Opts) -> Result<()> {
-    if let Some(path) = opts.relative_outdir.as_ref() {
-        std::env::set_current_dir(path.as_path())?;
-    }
-
-    Ok(())
+#[derive(Default)]
+struct Config {
+    ws: Option<PathBuf>,
+    exre: Option<Checker>,
+    crle64: Option<NamedTempFile>,
+    crle32: Option<NamedTempFile>,
 }
-
-fn find_proto_dir(opts: &Opts) -> Option<PathBuf> {
-    let proto_dir = match opts.dep_dir.as_ref() {
-        Some(d) => Some(d.clone()),
-        // If proto dir was passed via CLI, try to find it via the env
-        None => std::env::var("CODEMSG_WS").ok().map(PathBuf::from),
-    };
-    if let Some(dir) = proto_dir {
-        if std::fs::metadata(dir.as_path()).ok()?.is_dir() {
-            return Some(dir);
+impl Config {
+    fn new() -> Self {
+        Self {
+            ws: std::env::var("CODEMSG_WS").ok().map(PathBuf::from),
+            ..Default::default()
         }
     }
-    None
+    fn exre_check(&self, exc: ExcRtime, path: &str) -> bool {
+        if let Some(checker) = self.exre.as_ref() {
+            checker.check(exc, path)
+        } else {
+            false
+        }
+    }
+}
+
+fn load_exceptions(
+    opts: &Opts,
+    wsdir: Option<&PathBuf>,
+) -> Result<Option<Checker>> {
+    if let Some(exf) = opts.ex_file.as_ref().filter(|f| f.is_file()) {
+        let fp = File::open(exf)?;
+        return Ok(Some(Checker::load(fp)));
+    } else if let Some(ws) = wsdir {
+        let mut target = ws.clone();
+        target.push("exception_lists");
+        target.push("check_rtime");
+
+        if target.is_file() {
+            let fp = File::open(target)?;
+            return Ok(Some(Checker::load(fp)));
+        }
+    }
+    Ok(None)
+}
+
+fn build_crle_conf(
+    entries: Vec<(String, String)>,
+    is_64bit: bool,
+) -> Option<NamedTempFile> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut cmd = Command::new("crle");
+    if is_64bit {
+        cmd.arg("-64");
+    }
+
+    for (path, dir) in entries {
+        cmd.args(["-o", &dir, "-a", &format!("/{}", path)]);
+    }
+
+    let tf = NamedTempFile::new().ok()?;
+    cmd.args(["-c", tf.path().to_str()?]);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    let _ = cmd.output().ok()?;
+
+    Some(tf)
 }
 
 // Recurse through a directory hierarchy looking for appropriate dependencies to map from their
 // standard system locations to the proto area via a crle config file.
-fn alt_object_config(opts: &Opts) -> Result<Vec<find_elf::Item>> {
-    if let Some(dep_file) = opts.dep_file.as_ref() {
-        let mut fe = find_elf::FindElf::from_file(dep_file)?;
-        Ok(fe.collect())
+fn alt_object_config(opts: &Opts, cfg: &mut Config) -> Result<()> {
+    let fe = if let Some(dep_file) = opts.dep_file.as_ref() {
+        find_elf::FindElf::from_file(dep_file)?
     } else {
-        Ok(vec![])
+        // Locate proto dir, either as passed in via CLI or from WS env
+        let proto = opts
+            .dep_dir
+            .as_ref()
+            .map(|d| d.clone())
+            .or_else(|| cfg.ws.clone())
+            .filter(|d| d.is_dir());
+
+        if let Some(dir) = proto {
+            find_elf::FindElf::from_cmd(dir, true)?
+        } else {
+            return Ok(());
+        }
+    };
+
+    // Entries of `path` and `dir`
+    let mut crle32: Vec<(String, String)> = Vec::new();
+    let mut crle64: Vec<(String, String)> = Vec::new();
+
+    let prefix = PathBuf::from(fe.prefix().unwrap());
+    let mut last_dyn: Option<find_elf::Object> = None;
+    for item in fe {
+        let obj = match item.record {
+            find_elf::Record::Object(o) => {
+                if !o.is_dyn {
+                    last_dyn = None;
+                    continue;
+                }
+                last_dyn = Some(o);
+                o
+            }
+            find_elf::Record::Alias(_src) => {
+                if let Some(ld) = last_dyn.as_ref() {
+                    *ld
+                } else {
+                    continue;
+                }
+            }
+        };
+
+        if cfg.exre_check(ExcRtime::NoCrleAlt, &item.path) {
+            continue;
+        }
+
+        let mut full = prefix.clone();
+        full.push(&item.path);
+
+        let dir_part = if full.file_name().is_some() {
+            full.parent().unwrap()
+        } else {
+            full.as_path()
+        }
+        .to_string_lossy()
+        .to_string();
+
+        if obj.is_64bit {
+            crle64.push((item.path, dir_part));
+        } else {
+            crle32.push((item.path, dir_part));
+        }
     }
+
+    cfg.crle32 = build_crle_conf(crle32, false);
+    cfg.crle64 = build_crle_conf(crle64, true);
+
+    Ok(())
+}
+
+fn prep(opts: &Opts) -> Result<Config> {
+    let mut cfg = Config::new();
+
+    // Change dir if requested
+    if let Some(path) = opts.relative_outdir.as_ref() {
+        std::env::set_current_dir(path.as_path())?;
+    }
+
+    // load exception lists
+    cfg.exre = load_exceptions(opts, cfg.ws.as_ref())?;
+
+    // generate crle configs
+    alt_object_config(opts, &mut cfg)?;
+
+    Ok(cfg)
 }
 
 fn main() {
     let opts = Opts::from_args();
 
-    if let Err(e) = prep(&opts) {
-        eprintln!("Error during setup: {:?}", e);
-        std::process::exit(1);
-    }
-    println!("{:?}", opts);
+    let cfg = match prep(&opts) {
+        Err(e) => {
+            eprintln!("Error during setup: {:?}", e);
+            std::process::exit(1);
+        }
+        Ok(s) => s,
+    };
+    println!("opts: {:?}", opts);
 }
 
 // if ((getopts('D:d:E:e:f:I:imosvw:', \%opt) == 0) ||

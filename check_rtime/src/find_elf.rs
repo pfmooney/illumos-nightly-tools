@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Result;
 use std::io::{BufRead, BufReader};
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
 enum Source {
@@ -23,10 +23,7 @@ impl FindElf {
         let fp = File::open(path)?;
         let mut reader = BufReader::new(fp);
         let prefix = read_line(&mut reader).map(|l| parse_prefix(&l)).flatten();
-        Ok(Self {
-            inner: Source::File(reader),
-            prefix,
-        })
+        Ok(Self { inner: Source::File(reader), prefix })
     }
     pub fn from_cmd(path: PathBuf, only_dyn: bool) -> Result<Self> {
         let mut cmd = Command::new("find_elf");
@@ -39,24 +36,24 @@ impl FindElf {
         let mut child = cmd.spawn()?;
         let mut reader = BufReader::new(child.stdout.take().unwrap());
         let prefix = read_line(&mut reader).map(|l| parse_prefix(&l)).flatten();
-        Ok(Self {
-            inner: Source::Cmd(reader, child),
-            prefix,
-        })
+        Ok(Self { inner: Source::Cmd(reader, child), prefix })
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Object {
     pub is_64bit: bool,
     pub has_verdef: bool,
     pub is_dyn: bool,
 }
 
+#[derive(Clone)]
 pub enum Record {
     Object(Object),
     Alias(String),
 }
 
+#[derive(Clone)]
 pub struct Item {
     pub path: String,
     pub record: Record,
@@ -137,20 +134,13 @@ fn parse_item(buf: &str) -> Option<Item> {
             let path = fields.next()?.to_string();
             Some(Item {
                 path,
-                record: Record::Object(Object {
-                    is_64bit,
-                    has_verdef,
-                    is_dyn,
-                }),
+                record: Record::Object(Object { is_64bit, has_verdef, is_dyn }),
             })
         }
         "ALIAS" => {
             let src = fields.next()?.to_string();
             let path = fields.next()?.to_string();
-            Some(Item {
-                path,
-                record: Record::Alias(src),
-            })
+            Some(Item { path, record: Record::Alias(src) })
         }
         _ => None,
     }
