@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, Result, Write};
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -355,42 +356,6 @@ impl Results {
     }
 }
 
-fn check_mcs(path: &str) -> bool {
-    todo!();
-    // if ($opt{m} &&
-    //     (!defined($EXRE_no_comment) || ($RelPath !~ $EXRE_no_comment))) {
-    // 	my(@Mcs, $Con, $Dev);
-
-    // 	@Mcs = split(/\n/, `mcs -p $FullPath 2>&1`);
-
-    // 	$Con = $Dev = $Val = 0;
-    // 	foreach my $Line (@Mcs) {
-    // 		$Val++;
-
-    // 		if (($Val == 3) && ($Line !~ /^@\(#\)illumos/)) {
-    // 			$Con = 1;
-    // 			last;
-    // 		}
-    // 		if (($Val == 4) && ($Line =~ /^@\(#\)illumos/)) {
-    // 			$Dev = 1;
-    // 			next;
-    // 		}
-    // 		if (($Dev == 0) && ($Val == 4)) {
-    // 			$Con = 1;
-    // 			last;
-    // 		}
-    // 		if (($Dev == 1) && ($Val == 5)) {
-    // 			$Con = 1;
-    // 			last;
-    // 		}
-    // 	}
-    // 	if ($opt{m} && ($Con == 1)) {
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath,
-    // 	    "non-conforming mcs(1) comment\t<no \$(POST_PROCESS)?>");
-    // 	}
-    // }
-}
-
 fn check_ldd(res: &mut Results, full_path: &str) {
     // Take note of SUID/SGID
     // let is_secure = (meta.mode() & MODE_SUID_GUID) != 0;
@@ -618,18 +583,33 @@ fn process_file(
     }
 
     // Determine whether this ELF executable or shared object has a conforming
-    // mcs(1) comment section.  If the correct $(POST_PROCESS) macros are used,
-    // only a 3 or 4 line .comment section should exist containing one or two
-    // "@(#)illumos" identifying comments (one comment for a non-debug build,
-    // and two for a debug build). The results of the following split should be
-    // three or four lines, the last empty line being discarded by the split.
-
+    // mcs(1) comment section.
     if cfg.opts.process_mcs && !cfg.exre_check(ExcRtime::NoComment, path) {
-        if !check_mcs(&full_path) {
-            // 	if ($opt{m} && ($Con == 1)) {
-            // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath,
-            // 	    "non-conforming mcs(1) comment\t<no \$(POST_PROCESS)?>");
-            // 	}
+        let mut conform = false;
+        if let Some(comment_data) = find_shdr(&elf, ".comment")
+            .map(elf::SectionHeader::file_range)
+            .flatten()
+        {
+            let br = BufReader::new(NullToNewline::new(&rodata[comment_data]));
+            let lines: Vec<_> = br.lines().map(Result::unwrap).collect();
+
+            // If the correct $(POST_PROCESS) macros are used, only a 3 or 4
+            // line .comment section should exist containing one or two
+            // "@(#)illumos" identifying comments (one comment for a non-debug
+            // build, and two for a debug build).
+            if lines[0].is_empty() && lines[1].starts_with("@(#)illumos") {
+                conform = match lines.len() {
+                    3 => lines[2].is_empty(),
+                    4 => {
+                        lines[2].starts_with("@(#)illumos")
+                            && lines[3].is_empty()
+                    }
+                    _ => false,
+                }
+            }
+        }
+
+        if !conform {
             res.push_err(
                 "non-conforming mcs(1) comment\t<no $(POST_PROCESS)?>",
             );
