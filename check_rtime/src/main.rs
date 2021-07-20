@@ -593,17 +593,14 @@ fn process_file(
             let br = BufReader::new(NullToNewline::new(&rodata[comment_data]));
             let lines: Vec<_> = br.lines().map(Result::unwrap).collect();
 
-            // If the correct $(POST_PROCESS) macros are used, only a 3 or 4
+            // If the correct $(POST_PROCESS) macros are used, only a 2 or 3
             // line .comment section should exist containing one or two
             // "@(#)illumos" identifying comments (one comment for a non-debug
             // build, and two for a debug build).
             if lines[0].is_empty() && lines[1].starts_with("@(#)illumos") {
                 conform = match lines.len() {
-                    3 => lines[2].is_empty(),
-                    4 => {
-                        lines[2].starts_with("@(#)illumos")
-                            && lines[3].is_empty()
-                    }
+                    2 => true,
+                    3 if lines[2].starts_with("@(#)illumos") => true,
                     _ => false,
                 }
             }
