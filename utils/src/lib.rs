@@ -1,7 +1,5 @@
-use std::fs::File;
 use std::io::{Error, Result};
-use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::os::unix::io::RawFd;
 use std::ptr::{null_mut, NonNull};
 
 use libc::{mmap, munmap, MAP_SHARED, PROT_READ};
@@ -12,8 +10,7 @@ pub struct RoMMap {
 }
 
 impl RoMMap {
-    pub fn new(path: impl AsRef<Path>, len: usize) -> Result<Self> {
-        let fd = File::open(path)?.as_raw_fd();
+    pub fn new(fd: RawFd, len: usize) -> Result<Self> {
         let res =
             unsafe { mmap(null_mut(), len, PROT_READ, MAP_SHARED, fd, 0) };
         if let Some(ptr) = NonNull::new(res as *mut u8) {

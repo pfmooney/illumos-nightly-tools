@@ -86,22 +86,21 @@ impl<I: Iterator<Item = String>> Iterator for GetLine<I> {
             if buf.starts_with('#') {
                 continue;
             }
-            RE_COMMENT
-                .find(&buf)
-                .map(|m| m.range())
-                .map(|r| buf.replace_range(r, ""));
+            if let Some(r) = RE_COMMENT.find(&buf).map(|m| m.range()) {
+                buf.replace_range(r, "")
+            }
 
             // trim leading/trailing whitespace
             let trimmed = buf.trim();
 
-            if trimmed.len() != 0 {
-                if line.len() != 0 {
+            if !trimmed.is_empty() {
+                if !line.is_empty() {
                     line.push(' ');
                 }
                 line.push_str(trimmed);
             }
 
-            if !cont && line.len() != 0 {
+            if !cont && !line.is_empty() {
                 return Some((nr + 1, line));
             }
         }

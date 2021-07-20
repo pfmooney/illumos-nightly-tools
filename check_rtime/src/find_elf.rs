@@ -44,7 +44,7 @@ impl FindElf {
 pub struct Object {
     pub is_64bit: bool,
     pub has_verdef: bool,
-    pub is_dyn: bool,
+    pub is_exec: bool,
 }
 
 #[derive(Clone)]
@@ -115,11 +115,11 @@ fn parse_item(buf: &str) -> Option<Item> {
                     _ => None,
                 })
                 .flatten()?;
-            let is_dyn = fields
+            let is_exec = fields
                 .next()
                 .map(|x| match x {
-                    "DYN" => Some(true),
-                    "EXEC" => Some(false),
+                    "EXEC" => Some(true),
+                    "DYN" => Some(false),
                     _ => None,
                 })
                 .flatten()?;
@@ -134,7 +134,7 @@ fn parse_item(buf: &str) -> Option<Item> {
             let path = fields.next()?.to_string();
             Some(Item {
                 path,
-                record: Record::Object(Object { is_64bit, has_verdef, is_dyn }),
+                record: Record::Object(Object { is_64bit, has_verdef, is_exec }),
             })
         }
         "ALIAS" => {

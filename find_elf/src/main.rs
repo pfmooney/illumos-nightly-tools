@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
-use std::fs::Metadata;
+use std::fs::{File, Metadata};
 use std::io::{Error, ErrorKind, Result};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use goblin::elf::dynamic::DT_VERDEF;
@@ -196,7 +197,8 @@ fn query_elf_info(path: &Path, meta: &Metadata) -> Result<ObjDetail> {
         return Err(Error::new(ErrorKind::InvalidData, "file too small"));
     }
 
-    let mapped = RoMMap::new(path, meta.len() as usize)?;
+    let mapped =
+        RoMMap::new(File::open(path)?.as_raw_fd(), meta.len() as usize)?;
     match Elf::parse(mapped.take()) {
         Ok(obj) => {
             let has_verdef = if let Some(dynamic) = obj.dynamic {
