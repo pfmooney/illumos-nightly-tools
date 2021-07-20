@@ -346,6 +346,13 @@ impl Results {
     fn push_info(&mut self, info: String) {
         self.info.push(info)
     }
+    fn squash(self) -> Option<Self> {
+        if self.info.is_empty() && self.errors.is_empty() {
+            None
+        } else {
+            Some(self)
+        }
+    }
 }
 
 fn check_mcs(path: &str) -> bool {
@@ -546,7 +553,6 @@ fn process_file(
     obj: Object,
 ) -> Result<Option<Results>> {
     let full_path = format!("{}/{}", prefix, path);
-
     let meta = std::fs::symlink_metadata(&full_path)?;
 
     // Ignore symbolic links
@@ -639,7 +645,7 @@ fn process_file(
         .iter()
         .any(|shdr| shdr.sh_type == elf::section_header::SHT_DYNAMIC)
     {
-        return Ok(Some(res));
+        return Ok(res.squash());
     }
 
     // # Use ldd unless its a 64-bit object and we lack the hardware.
@@ -769,14 +775,25 @@ fn process_file(
     if obj.has_verdef && cfg.opts.process_verdef {
         // ProcVerdef($FullPath, $RelPath)
     }
-    Ok(Some(res))
+    Ok(res.squash())
 }
 
 fn process(cfg: &mut Config, fe: FindElf) {
     let prefix = fe.prefix().unwrap();
+    let mut results = BTreeMap::new();
     for item in fe {
         if let Record::Object(o) = item.record {
-            process_file(cfg, &prefix, &item.path, o);
+            if let Ok(Some(res)) = process_file(cfg, &prefix, &item.path, o) {
+                results.insert(item.path, res);
+            }
+        }
+    }
+    for (obj, res) in results.iter() {
+        for msg in res.errors.iter() {
+            cfg.msg_err(obj, msg);
+        }
+        for msg in res.info.iter() {
+            cfg.msg_info(obj, msg);
         }
     }
 }
