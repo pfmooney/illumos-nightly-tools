@@ -82,7 +82,8 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
     // Number of missing symbols we will complain about before gagging the
     // output to cut down on excess noise.
-    let mut missing: Option<usize> = Some(5);
+    const MISSING_LIMIT: usize = 5;
+    let mut missing_sym: usize = 0;
     let mut check_undep = true;
     let mut res = Results::default();
 
@@ -117,7 +118,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         // Look for "file" or "versions" that aren't found.  Note that
         // these lines will occur before we find any symbol referencing
         // errors.
-        if missing.is_some() && line.contains("not found") {
+        if missing_sym == 0 && line.contains("not found)") {
             if line.contains("file not found)") {
                 res.push_err(&format!("{}\t<no -zdefs?>", line));
             } else {
@@ -125,29 +126,25 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             }
             continue;
         }
+
         // Look for relocations whose symbols can't be found.  Note, we
         // only print out the first 5 relocations for any file as this
         // output can be excessive.
-        if missing.is_some() && line.contains("symbol not found") {
+        if missing_sym < MISSING_LIMIT && line.contains("symbol not found") {
             // Determine if this file is allowed undefined references.
             if cfg.excepted(ExcRtime::UndefRef, path) {
-                missing = None;
+                missing_sym = MISSING_LIMIT;
                 continue;
             }
-            missing = match missing {
-                Some(1) => {
-                    if !cfg.oneliner_output {
-                        res.push_err("continued ...");
-                    }
-                    None
+            missing_sym += 1;
+            if missing_sym == MISSING_LIMIT {
+                if !cfg.oneliner_output {
+                    res.push_err("continued ...");
                 }
-                Some(x) => {
-                    // Just print the symbol name.
-                    res.push_err(&format!("{}\t<no -zdefs>?", sanitize(line)));
-                    Some(x - 1)
-                }
-                None => None,
-            };
+            } else {
+                // Just print the symbol name.
+                res.push_err(&format!("{}\t<no -zdefs>?", sanitize(line)));
+            }
             continue;
         }
 
