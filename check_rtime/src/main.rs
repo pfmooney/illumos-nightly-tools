@@ -596,13 +596,21 @@ fn process_file(
             // If the correct $(POST_PROCESS) macros are used, only a 2 or 3
             // line .comment section should exist containing one or two
             // "@(#)illumos" identifying comments (one comment for a non-debug
-            // build, and two for a debug build).
+            // build, and two for a debug build).  An empty line may also follow
+            // this as well.
             if lines[0].is_empty() && lines[1].starts_with("@(#)illumos") {
-                conform = match lines.len() {
-                    2 => true,
-                    3 if lines[2].starts_with("@(#)illumos") => true,
+                conform = match (lines.get(2), lines.get(3)) {
+                    (None, None) => true,
+                    (Some(l2), None) => {
+                        l2.is_empty() || l2.starts_with("@(#)illumos")
+                    }
+                    (Some(l2), Some(l3)) => {
+                        l2.starts_with("@(#)illumos")
+                            && l3.is_empty()
+                            && lines.len() == 4
+                    }
                     _ => false,
-                }
+                };
             }
         }
 
