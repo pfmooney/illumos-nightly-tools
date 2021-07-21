@@ -43,19 +43,19 @@ fn find_shdr<'a>(
     })
 }
 
-struct NullToNewline<R: Read> {
+/// Convert any NULs to newlines like mcs(1) does
+struct CommentFilter<R: Read> {
     inner: R,
 }
-impl<R: Read> NullToNewline<R> {
+impl<R: Read> CommentFilter<R> {
     pub fn new(inner: R) -> Self {
         Self { inner }
     }
 }
-impl<R: Read> Read for NullToNewline<R> {
+impl<R: Read> Read for CommentFilter<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self.inner.read(buf) {
             Ok(c) => {
-                // Conver any NULs to newlines like mcs(1)
                 for b in buf[..c].iter_mut() {
                     if *b == b'\0' {
                         *b = b'\n'
@@ -137,7 +137,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         // output can be excessive.
         if missing.is_some() && line.contains("symbol not found") {
             // Determine if this file is allowed undefined references.
-            if cfg.exre_check(ExcRtime::UndefRef, path) {
+            if cfg.excepted(ExcRtime::UndefRef, path) {
                 missing = None;
                 continue;
             }
@@ -160,7 +160,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
         // Look for any unused search paths.
         if line.contains("unused search path=") {
-            if cfg.exre_check(ExcRtime::UnusedRpath, &line) {
+            if cfg.excepted(ExcRtime::UnusedRpath, &line) {
                 continue;
             }
             // if ($Secure) {
@@ -176,7 +176,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         // objects are ignored, then set $UnDep so as to suppress any
         // associated unused-object messages.
         if line.contains("unreferenced object=") {
-            if cfg.exre_check(ExcRtime::UnrefObj, &line) {
+            if cfg.excepted(ExcRtime::UnrefObj, &line) {
                 check_undep = false;
                 continue;
             }
@@ -193,12 +193,12 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         //  Look for any unused dependencies.
         if check_undep && line.contains("unused") {
             // Skip if object is allowed to have unused dependencies
-            if cfg.exre_check(ExcRtime::UnusedDeps, path) {
+            if cfg.excepted(ExcRtime::UnusedDeps, path) {
                 continue;
             }
 
             // Skip if dependency is always allowed to be unused
-            if cfg.exre_check(ExcRtime::UnusedObj, &line) {
+            if cfg.excepted(ExcRtime::UnusedObj, &line) {
                 continue;
             }
 
@@ -226,7 +226,7 @@ pub(crate) fn process_file(
     }
 
     // Is this an object or directory hierarchy we don't care about?
-    if cfg.exre_check(ExcRtime::Skip, path) {
+    if cfg.excepted(ExcRtime::Skip, path) {
         return Ok(None);
     }
 
@@ -261,36 +261,38 @@ pub(crate) fn process_file(
                 && phdr.is_write()
                 && phdr.is_executable()
         }) {
-            if !cfg.exre_check(ExcRtime::ExecData, path) {
-                res.push_err("application requires non-executable data\t<no -Mmapfile_noexdata?>");
-            }
-        }
-    }
-
-    // Applications should contain a non-executable stack definition.
-    if obj.is_exec {
-        if !elf
-            .program_headers
-            .iter()
-            .any(|phdr| phdr.p_type == elf::program_header::PT_SUNWSTACK)
-        {
-            if !cfg.exre_check(ExcRtime::ExecStack, path) {
+            if !cfg.excepted(ExcRtime::ExecData, path) {
                 res.push_err(
-                    "non-executable stack required\t<no -Mmapfile_noexstk?>",
+                    "application requires non-executable data\
+                    \t<no -Mmapfile_noexdata?>",
                 );
             }
         }
     }
 
+    // Applications should contain a non-executable stack definition.
+    if obj.is_exec
+        && !elf
+            .program_headers
+            .iter()
+            .any(|phdr| phdr.p_type == elf::program_header::PT_SUNWSTACK)
+    {
+        if !cfg.excepted(ExcRtime::ExecStack, path) {
+            res.push_err(
+                "non-executable stack required\t<no -Mmapfile_noexstk?>",
+            );
+        }
+    }
+
     // Determine whether this ELF executable or shared object has a conforming
     // mcs(1) comment section.
-    if cfg.process_mcs && !cfg.exre_check(ExcRtime::NoComment, path) {
+    if cfg.process_mcs && !cfg.excepted(ExcRtime::NoComment, path) {
         let mut conform = false;
         if let Some(comment_data) = find_shdr(&elf, ".comment")
             .map(elf::SectionHeader::file_range)
             .flatten()
         {
-            let br = BufReader::new(NullToNewline::new(&rodata[comment_data]));
+            let br = BufReader::new(CommentFilter::new(&rodata[comment_data]));
             let lines: Vec<_> = br.lines().map(Result::unwrap).collect();
 
             // If the correct $(POST_PROCESS) macros are used, only a 2 or 3
@@ -395,7 +397,7 @@ pub(crate) fn process_file(
 
         // Determine if this file is allowed text relocations.
         if info.textrel {
-            if !cfg.exre_check(ExcRtime::TextRel, path) {
+            if !cfg.excepted(ExcRtime::TextRel, path) {
                 res.push_err("TEXTREL .dynamic tag\t\t\t<no -Kpic?>");
             }
         }
@@ -413,7 +415,7 @@ pub(crate) fn process_file(
         // # -z direct.
         if relsz != 0
             && !has_direct_binding
-            && !cfg.exre_check(ExcRtime::NoDirect, path)
+            && !cfg.excepted(ExcRtime::NoDirect, path)
         {
             res.push_err(
                 "object has no direct bindings\t<no -B direct or -z direct?>",
@@ -434,13 +436,13 @@ pub(crate) fn process_file(
     }
     for need in elf.libraries {
         // Catch any old (unnecessary) dependencies.
-        if cfg.exre_check(ExcRtime::OldDep, need) {
+        if cfg.excepted(ExcRtime::OldDep, need) {
             res.push_err(&format!(
                 "NEEDED={}\t<dependency no longer necessary>",
                 need
             ));
-        } else if cfg.exre_check(ExcRtime::Forbidden, need)
-            && !cfg.exre_check(ExcRtime::ForbiddenDep, need)
+        } else if cfg.excepted(ExcRtime::Forbidden, need)
+            && !cfg.excepted(ExcRtime::ForbiddenDep, need)
         {
             res.push_err(&format!(
                 "NEEDED={}\t<forbidden dependency, missing -nodefaultlibs?>",
@@ -455,7 +457,7 @@ pub(crate) fn process_file(
     // remaining, they should be stripped.
     if cfg.process_stab
         && has_stabs
-        && !cfg.exre_check(ExcRtime::Forbidden, path)
+        && !cfg.excepted(ExcRtime::Forbidden, path)
     {
         res.push_err("debugging sections should be deleted\t<no strip -x?>");
     }
@@ -468,7 +470,7 @@ pub(crate) fn process_file(
 
     // If there are symbol sort sections in this object, report on
     // any that have duplicate addresses.
-    if has_symsort && !cfg.exre_check(ExcRtime::NoSymSort, path) {
+    if has_symsort && !cfg.excepted(ExcRtime::NoSymSort, path) {
         // ProcSymSort($FullPath, $RelPath)
     }
 

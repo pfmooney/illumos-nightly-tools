@@ -12,7 +12,6 @@ use structopt::StructOpt;
 use tempfile::NamedTempFile;
 
 mod checks;
-mod elf_util;
 mod exceptions;
 mod find_elf;
 
@@ -117,14 +116,14 @@ impl AppState {
             crle32: None,
         }
     }
-    fn exre_check(&self, exc: ExcRtime, path: &str) -> bool {
+    fn excepted(&self, exc: ExcRtime, path: &str) -> bool {
         if let Some(checker) = &self.exre {
             checker.check(exc, path)
         } else {
             false
         }
     }
-    fn get_config(&self) -> Config {
+    fn config(&self) -> Config {
         // TODO: build crle string
         let crle_env = String::new();
         Config::new(&self.opts, self.exre.as_ref(), crle_env)
@@ -156,7 +155,7 @@ impl<'a> Config<'a> {
             ldd_crle_env,
         }
     }
-    pub fn exre_check(&self, exc: ExcRtime, item: &str) -> bool {
+    pub fn excepted(&self, exc: ExcRtime, item: &str) -> bool {
         if let Some(checker) = &self.exception_list {
             checker.check(exc, item)
         } else {
@@ -260,7 +259,7 @@ fn alt_object_config(state: &mut AppState) -> Result<()> {
             }
         };
 
-        if state.exre_check(ExcRtime::NoCrleAlt, &item.path) {
+        if state.excepted(ExcRtime::NoCrleAlt, &item.path) {
             continue;
         }
 
@@ -373,7 +372,7 @@ fn format_results(state: &mut AppState, obj: &str, res: &Results) {
 
 fn process(state: &mut AppState, fe: FindElf) {
     let prefix = fe.prefix().unwrap();
-    let cfg = state.get_config();
+    let cfg = state.config();
     let mut results = BTreeMap::new();
     for item in fe {
         if let Record::Object(o) = item.record {
