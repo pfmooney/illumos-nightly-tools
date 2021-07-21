@@ -150,12 +150,15 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
         // Look for any unused search paths.
         if line.contains("unused search path=") {
-            if cfg.excepted(ExcRtime::UnusedRpath, &line) {
+            // The RPATH exception check must be performed on the sanitized
+            // line, since those exceptions match against the object path.
+            let clean_line = sanitize(line);
+            if cfg.excepted(ExcRtime::UnusedRpath, &clean_line) {
                 continue;
             }
             res.push_err(&format!(
                 "{}\t<remove search path?>",
-                sanitize(line).trim_start()
+                clean_line.trim_start()
             ));
             continue;
         }

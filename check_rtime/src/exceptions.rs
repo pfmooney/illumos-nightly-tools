@@ -221,7 +221,7 @@ two
 SKIP		^usr/lib/libc/			# optimized libc
 EXEC_DATA	^MACH(lib)/ld\.so\.1$
 UNREF_OBJ	/lib.*\ of\ .*libssl3\.so
-UNUSED_RPATH	\$ORIGIN.*\ from\ .*fcode.so
+UNUSED_RPATH	/etc/ppp/plugins.*\ from\ .*pppd
         "#;
         let c = Checker::load(input_file.as_bytes());
         assert!(c.check(ExcRtime::Skip, "usr/lib/libc/foo.so"));
@@ -236,7 +236,7 @@ UNUSED_RPATH	\$ORIGIN.*\ from\ .*fcode.so
         ));
         assert!(c.check(
             ExcRtime::UnusedRpath,
-            "$ORIGIN/lib unused from usr/lib/fcode.so"
+            "unused search path=/etc/ppp/plugins  (RUNPATH/RPATH from file usr/bin/pppd)"
         ));
     }
 }
