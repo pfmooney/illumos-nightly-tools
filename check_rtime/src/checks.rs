@@ -418,7 +418,7 @@ pub(crate) fn process_file(
                 need
             ));
         } else if cfg.excepted(ExcRtime::Forbidden, need)
-            && !cfg.excepted(ExcRtime::ForbiddenDep, need)
+            && !cfg.excepted(ExcRtime::ForbiddenDep, path)
         {
             res.push_err(&format!(
                 "NEEDED={}\t<forbidden dependency, missing -nodefaultlibs?>",
