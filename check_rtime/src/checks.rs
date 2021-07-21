@@ -99,25 +99,24 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             } else if line.contains("execution failed") {
                 res.push_err(&line);
             }
-            // It's possible this binary can't be executed, ie. we've
-            // found a sparc binary while running on an intel system,
-            // or a sparcv9 binary on a sparcv7/8 system.
+            // It's possible this binary can't be executed, ie. we've found a
+            // sparc binary while running on an intel system, or a sparcv9
+            // binary on a sparcv7/8 system.
             if line.contains("wrong class") {
                 res.push_err("has wrong class or data encoding");
                 continue;
             }
 
-            // Historically, ldd(1) likes executable objects to have
-            // their execute bit set.
+            // Historically, ldd(1) likes executable objects to have their
+            // execute bit set.
             if line.contains("not executable") {
                 res.push_err("is not executable");
                 continue;
             }
         }
 
-        // Look for "file" or "versions" that aren't found.  Note that
-        // these lines will occur before we find any symbol referencing
-        // errors.
+        // Look for "file" or "versions" that aren't found.  Note that these
+        // lines will occur before we find any symbol referencing errors.
         if missing_sym == 0 && line.contains("not found)") {
             if line.contains("file not found)") {
                 res.push_err(&format!("{}\t<no -zdefs?>", line));
@@ -127,9 +126,9 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             continue;
         }
 
-        // Look for relocations whose symbols can't be found.  Note, we
-        // only print out the first 5 relocations for any file as this
-        // output can be excessive.
+        // Look for relocations whose symbols can't be found.  Note, we only
+        // print out the first 5 relocations for any file as this output can be
+        // excessive.
         if missing_sym < MISSING_LIMIT && line.contains("symbol not found") {
             // Determine if this file is allowed undefined references.
             if cfg.excepted(ExcRtime::UndefRef, path) {
@@ -164,8 +163,8 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         }
 
         // Look for unreferenced dependencies.  Note, if any unreferenced
-        // objects are ignored, then set $UnDep so as to suppress any
-        // associated unused-object messages.
+        // objects are ignored, then set $UnDep so as to suppress any associated
+        // unused-object messages.
         if line.contains("unreferenced object=") {
             if cfg.excepted(ExcRtime::UnrefObj, &line) {
                 check_undep = false;
@@ -327,13 +326,12 @@ pub(crate) fn process_file(
     let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
         check_ldd(cfg, &path, &full_path)
     } else {
-        // The execution of a secure application over an nfs file
-        // system mounted nosuid will result in warning messages
-        // being sent to /var/adm/messages.  As this type of
-        // environment can occur with root builds, move the file
-        // being investigated to a safe place first.  In addition
-        // remove its secure permission so that it can be
-        // influenced by any alternative dependency mappings.
+        // The execution of a secure application over an nfs file system mounted
+        // nosuid will result in warning messages being sent to
+        // /var/adm/messages.  As this type of environment can occur with root
+        // builds, move the file being investigated to a safe place first.  In
+        // addition, remove its secure permission so that it can be influenced by
+        // any alternative dependency mappings.
 
         // Copy into a temp file where we control the permissions
         let mut lddtmp = NamedTempFile::new()?;
@@ -396,13 +394,14 @@ pub(crate) fn process_file(
         let pltsz = info.pltrelsz;
 
         // A shared object, that contains non-plt relocations, should have a
-        // combined relocation section indicating it was built with -z combreloc.
+        // combined relocation section indicating it was built with
+        // "-z combreloc".
         if !obj.is_exec && relsz != 0 && relsz != pltsz && !has_sunreloc {
             res.push_err(".SUNW_reloc section missing\t\t<no -zcombreloc?>");
         }
 
-        // # Identify an object that is not built with either -B direct or
-        // # -z direct.
+        // Identify an object that is not built with either "-B direct" or
+        // "-z direct".
         if relsz != 0
             && !has_direct_binding
             && !cfg.excepted(ExcRtime::NoDirect, path)
@@ -453,21 +452,20 @@ pub(crate) fn process_file(
         res.push_err("debugging sections should be deleted\t<no strip -x?>");
     }
 
-    // All objects should have a full symbol table to provide complete
-    // debugging stack traces.
+    // All objects should have a full symbol table to provide complete debugging
+    // stack traces.
     if !has_symtab {
         res.push_err("symbol table should not be stripped\t<remove -s?>");
     }
 
-    // If there are symbol sort sections in this object, report on
-    // any that have duplicate addresses.
+    // If there are symbol sort sections in this object, report on any that have
+    // duplicate addresses.
     if has_symsort && !cfg.excepted(ExcRtime::NoSymSort, path) {
         // ProcSymSort($FullPath, $RelPath)
     }
 
-    // If -v was specified, and the object has a version definition
-    // section, generate output showing each public symbol and the
-    // version it belongs to.
+    // If -v was specified, and the object has a version definition section,
+    // generate output showing each public symbol and the version it belongs to.
     if obj.has_verdef && cfg.process_verdef {
         // ProcVerdef($FullPath, $RelPath)
     }
