@@ -68,24 +68,20 @@ impl<R: Read> Read for CommentFilter<R> {
     }
 }
 
-fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
+fn check_ldd(
+    cfg: &Config,
+    path: &str,
+    full_path: &str,
+    sanitize: impl Fn(String) -> String,
+) -> Results {
     let mut cmd = Command::new("ldd");
     cmd.arg("-rU");
-    //cmd.arg(CRLE stuff);
+    if let Some(env) = cfg.crle_env() {
+        cmd.args(&["-e", env]);
+    }
     cmd.arg(full_path);
     cmd.stdin(Stdio::null());
-
     let out = cmd.output().unwrap();
-
-    // 	# Use ldd(1) to determine the objects relocatability and use.
-    // 	# By default look for all unreferenced dependencies.  However,
-    // 	# some objects have legitimate dependencies that they do not
-    // 	# reference.
-    // 	@Ldd = split(/\n/, `ldd -rU $Env $LDDFullPath 2>&1`);
-    // 	if ($Secure) {
-    // 		unlink $LDDFullPath;
-    // 	}
-    // }
 
     // Number of missing symbols we will complain about before gagging the
     // output to cut down on excess noise.
@@ -163,13 +159,11 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             if cfg.excepted(ExcRtime::UnusedRpath, &line) {
                 continue;
             }
-            // if ($Secure) {
-            //     $Line =~ s!$Tmpdir/!!;
-            // }
-            // $Line =~ s/^[ \t]*(.*)/\t$1\t<remove search path?>/;
-            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-            todo!("XXX FINISH ME");
-            //continue;
+            res.push_err(&format!(
+                "{}\t<remove search path?>",
+                sanitize(line).trim_start_matches('\t')
+            ));
+            continue;
         }
 
         // Look for unreferenced dependencies.  Note, if any unreferenced
@@ -180,14 +174,11 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
                 check_undep = false;
                 continue;
             }
-            // if ($Secure) {
-            //     $Line =~ s!$Tmpdir/!!;
-            // }
-            // $Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
-            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-            // next;
-            todo!("XXX FINISH ME");
-            //continue;
+            res.push_err(&format!(
+                "{}\t<remove lib or -zignore?>",
+                sanitize(line).trim_start_matches('\t')
+            ));
+            continue;
         }
 
         //  Look for any unused dependencies.
@@ -202,9 +193,10 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
                 continue;
             }
 
-            // $Line =~ s!$Tmpdir/!! if $Secure;
-            // $Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
-            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
+            res.push_err(&format!(
+                "{}\t<remove lib or -zignore?>",
+                sanitize(line).trim_start_matches('\t')
+            ));
             continue;
         }
     }
@@ -336,7 +328,7 @@ pub(crate) fn process_file(
     // Perform ldd(1) checks
     const MODE_SUID_GUID: u32 = 0o6000;
     let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
-        check_ldd(cfg, &path, &full_path)
+        check_ldd(cfg, &path, &full_path, |s| s)
     } else {
         // The execution of a secure application over an nfs file
         // system mounted nosuid will result in warning messages
@@ -352,8 +344,13 @@ pub(crate) fn process_file(
         lddtmp
             .as_file_mut()
             .set_permissions(PermissionsExt::from_mode(0o0555))?;
+        let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
 
-        check_ldd(cfg, &path, &lddtmp.path().to_string_lossy())
+        let msg_sanitize = |m: String| -> String {
+            m.replace(lddtmp_path, path)
+        };
+
+        check_ldd(cfg, &path, &lddtmp_path, msg_sanitize)
     };
     res.append(ldd_res);
 
@@ -455,9 +452,7 @@ pub(crate) fn process_file(
 
     // No objects released to a customer should have any .stabs sections
     // remaining, they should be stripped.
-    if cfg.process_stab
-        && has_stabs
-        && !cfg.excepted(ExcRtime::Forbidden, path)
+    if cfg.process_stab && has_stabs && !cfg.excepted(ExcRtime::Forbidden, path)
     {
         res.push_err("debugging sections should be deleted\t<no strip -x?>");
     }

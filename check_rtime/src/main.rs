@@ -123,10 +123,22 @@ impl AppState {
             false
         }
     }
+
+    fn crle_env(&self) -> Option<String> {
+        let crle32 = self.crle32.as_ref().map(|tf| tf.path().to_string_lossy());
+        let crle64 = self.crle64.as_ref().map(|tf| tf.path().to_string_lossy());
+        match (crle32, crle64) {
+            (None, None) => None,
+            (Some(c32), None) => Some(format!("LD_FLAGS=config_32={}", c32)),
+            (None, Some(c64)) => Some(format!("LD_FLAGS=config_64={}", c64)),
+            (Some(c32), Some(c64)) => {
+                Some(format!("LD_FLAGS=config_64={},config_32={}", c64, c32))
+            }
+        }
+    }
+
     fn config(&self) -> Config {
-        // TODO: build crle string
-        let crle_env = String::new();
-        Config::new(&self.opts, self.exre.as_ref(), crle_env)
+        Config::new(&self.opts, self.exre.as_ref(), self.crle_env())
     }
 }
 
@@ -137,13 +149,13 @@ pub(crate) struct Config<'a> {
     pub process_verdef: bool,
     pub oneliner_output: bool,
     exception_list: Option<&'a Checker>,
-    ldd_crle_env: String,
+    ldd_crle_env: Option<String>,
 }
 impl<'a> Config<'a> {
     pub fn new(
         opts: &Opts,
         exre: Option<&'a Checker>,
-        ldd_crle_env: String,
+        ldd_crle_env: Option<String>,
     ) -> Self {
         Self {
             process_dyn_table: opts.process_dyn_table,
@@ -162,8 +174,8 @@ impl<'a> Config<'a> {
             false
         }
     }
-    pub fn clre_env(&self) -> &str {
-        &self.ldd_crle_env
+    pub fn crle_env(&self) -> Option<&String> {
+        self.ldd_crle_env.as_ref()
     }
 }
 
