@@ -155,7 +155,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             }
             res.push_err(&format!(
                 "{}\t<remove search path?>",
-                sanitize(line).trim_start_matches('\t')
+                sanitize(line).trim_start()
             ));
             continue;
         }
@@ -170,7 +170,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
             }
             res.push_err(&format!(
                 "{}\t<remove lib or -zignore?>",
-                sanitize(line).trim_start_matches('\t')
+                sanitize(line).trim_start()
             ));
             continue;
         }
@@ -189,7 +189,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
             res.push_err(&format!(
                 "{}\t<remove lib or -zignore?>",
-                sanitize(line).trim_start_matches('\t')
+                sanitize(line).trim_start()
             ));
             continue;
         }
