@@ -408,21 +408,10 @@ pub(crate) fn process_file(
                 "object has no direct bindings\t<no -B direct or -z direct?>",
             );
         }
-
-        // Does this object specify a runpath?
-        let dynstrtab = &elf.dynstrtab;
-        if let Some(rpath) = edyn
-            .dyns
-            .iter()
-            .find(|d| d.d_tag == elf::dynamic::DT_RPATH)
-            .map(|d| dynstrtab.get_at(d.d_val as usize))
-            .flatten()
-        {
-            res.push_info(format!("RPATH={}", rpath));
-        }
     }
+
+    // Catch any old (unnecessary) dependencies.
     for need in elf.libraries {
-        // Catch any old (unnecessary) dependencies.
         if cfg.excepted(ExcRtime::OldDep, need) {
             res.push_err(&format!(
                 "NEEDED={}\t<dependency no longer necessary>",
@@ -437,6 +426,20 @@ pub(crate) fn process_file(
             ));
         } else if cfg.process_dyn_table {
             res.push_info(format!("NEEDED={}", need));
+        }
+    }
+
+    // Does this object specify a runpath?
+    if let Some(edyn) = &elf.dynamic {
+        let dynstrtab = &elf.dynstrtab;
+        if let Some(rpath) = edyn
+            .dyns
+            .iter()
+            .find(|d| d.d_tag == elf::dynamic::DT_RPATH)
+            .map(|d| dynstrtab.get_at(d.d_val as usize))
+            .flatten()
+        {
+            res.push_info(format!("RPATH={}", rpath));
         }
     }
 
