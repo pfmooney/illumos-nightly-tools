@@ -68,12 +68,7 @@ impl<R: Read> Read for CommentFilter<R> {
     }
 }
 
-fn check_ldd(
-    cfg: &Config,
-    path: &str,
-    full_path: &str,
-    sanitize: impl Fn(String) -> String,
-) -> Results {
+fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
     let mut cmd = Command::new("ldd");
     cmd.arg("-rU");
     if let Some(env) = cfg.crle_env() {
@@ -82,6 +77,8 @@ fn check_ldd(
     cmd.arg(full_path);
     cmd.stdin(Stdio::null());
     let out = cmd.output().unwrap();
+
+    let sanitize = |m: String| -> String { m.replace(full_path, path) };
 
     // Number of missing symbols we will complain about before gagging the
     // output to cut down on excess noise.
@@ -146,7 +143,7 @@ fn check_ldd(
                 }
                 Some(x) => {
                     // Just print the symbol name.
-                    res.push_err(&format!("{}\t<no -zdefs>?", line));
+                    res.push_err(&format!("{}\t<no -zdefs>?", sanitize(line)));
                     Some(x - 1)
                 }
                 None => None,
@@ -328,7 +325,7 @@ pub(crate) fn process_file(
     // Perform ldd(1) checks
     const MODE_SUID_GUID: u32 = 0o6000;
     let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
-        check_ldd(cfg, &path, &full_path, |s| s)
+        check_ldd(cfg, &path, &full_path)
     } else {
         // The execution of a secure application over an nfs file
         // system mounted nosuid will result in warning messages
@@ -346,10 +343,7 @@ pub(crate) fn process_file(
             .set_permissions(PermissionsExt::from_mode(0o0555))?;
         let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
 
-        let msg_sanitize =
-            |m: String| -> String { m.replace(lddtmp_path, path) };
-
-        check_ldd(cfg, &path, &lddtmp_path, msg_sanitize)
+        check_ldd(cfg, &path, &lddtmp_path)
     };
     res.append(ldd_res);
 
