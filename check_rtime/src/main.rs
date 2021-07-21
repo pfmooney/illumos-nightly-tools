@@ -49,7 +49,7 @@ struct Opts {
 
     /// produce dynamic table entry information
     #[structopt(short = "i")]
-    produce_dyn_table: bool,
+    process_dyn_table: bool,
 
     /// process mcs(1) comments
     #[structopt(short = "m")]
@@ -57,7 +57,7 @@ struct Opts {
 
     /// produce one-liner output (prefixed with pathname)
     #[structopt(short = "o")]
-    produce_oneliner: bool,
+    oneliner_output: bool,
 
     /// process .stab and .symtab entries
     #[structopt(short = "s")]
@@ -75,7 +75,7 @@ struct Opts {
     path_list: Vec<PathBuf>,
 }
 
-struct Config {
+struct AppState {
     opts: Opts,
     ws: Option<PathBuf>,
     exre: Option<Checker>,
@@ -83,11 +83,9 @@ struct Config {
     crle32: Option<NamedTempFile>,
     fp_info: Box<dyn Write>,
     fp_err: Box<dyn Write>,
-    cnt_info: usize,
-    cnt_err: usize,
     output_combined: bool,
 }
-impl Config {
+impl AppState {
     fn new(
         opts: Opts,
         ws: Option<PathBuf>,
@@ -122,8 +120,6 @@ impl Config {
             exre: None,
             crle64: None,
             crle32: None,
-            cnt_info: 0,
-            cnt_err: 0,
         }
     }
     fn exre_check(&self, exc: ExcRtime, path: &str) -> bool {
@@ -133,59 +129,47 @@ impl Config {
             false
         }
     }
-    fn needs_header(&self, is_err: bool) -> bool {
-        if self.output_combined {
-            (self.cnt_info + self.cnt_err) == 0
-        } else {
-            if is_err {
-                self.cnt_err == 0
-            } else {
-                self.cnt_info == 0
-            }
+    fn get_config(&self) -> Config {
+        // TODO: build crle string
+        let crle_env = String::new();
+        Config::new(&self.opts, self.exre.as_ref(), crle_env)
+    }
+}
+
+struct Config<'a> {
+    pub process_dyn_table: bool,
+    pub process_mcs: bool,
+    pub process_stab: bool,
+    pub process_verdef: bool,
+    pub oneliner_output: bool,
+    exception_list: Option<&'a Checker>,
+    ldd_crle_env: String,
+}
+impl<'a> Config<'a> {
+    pub fn new(
+        opts: &Opts,
+        exre: Option<&'a Checker>,
+        ldd_crle_env: String,
+    ) -> Self {
+        Self {
+            process_dyn_table: opts.process_dyn_table,
+            process_mcs: opts.process_mcs,
+            process_stab: opts.process_stab,
+            process_verdef: opts.process_verdef,
+            oneliner_output: opts.oneliner_output,
+            exception_list: exre,
+            ldd_crle_env,
         }
     }
-    fn msg_fmt(
-        fp: &mut Box<dyn Write>,
-        obj: &str,
-        msg: &str,
-        oneline: bool,
-        needs_header: bool,
-    ) {
-        if oneline {
-            let _ = write!(fp, "{}: {}\n", obj, msg);
+    pub fn exre_check(&self, exc: ExcRtime, item: &str) -> bool {
+        if let Some(checker) = &self.exception_list {
+            checker.check(exc, item)
         } else {
-            if needs_header {
-                let _ = write!(fp, "==== {} ====\n\t{}\n", obj, msg);
-            } else {
-                let _ = write!(fp, "\t{}\n", msg);
-            }
+            false
         }
     }
-    fn msg_info(&mut self, obj: &str, msg: &str) {
-        let needs_header =
-            (self.cnt_info == 0) || (self.output_combined && self.cnt_err == 0);
-        Self::msg_fmt(
-            &mut self.fp_info,
-            obj,
-            msg,
-            self.opts.produce_oneliner,
-            needs_header,
-        );
-    }
-    fn msg_err(&mut self, obj: &str, msg: &str) {
-        let needs_header =
-            (self.cnt_err == 0) || (self.output_combined && self.cnt_info == 0);
-        Self::msg_fmt(
-            &mut self.fp_err,
-            obj,
-            msg,
-            self.opts.produce_oneliner,
-            needs_header,
-        );
-    }
-    fn msg_obj_reset(&mut self) {
-        self.cnt_info = 0;
-        self.cnt_err = 0;
+    pub fn clre_env(&self) -> &str {
+        &self.ldd_crle_env
     }
 }
 
@@ -236,17 +220,17 @@ fn build_crle_conf(
 
 // Recurse through a directory hierarchy looking for appropriate dependencies to map from their
 // standard system locations to the proto area via a crle config file.
-fn alt_object_config(cfg: &mut Config) -> Result<()> {
-    let fe = if let Some(dep_file) = &cfg.opts.dep_file {
+fn alt_object_config(state: &mut AppState) -> Result<()> {
+    let fe = if let Some(dep_file) = &state.opts.dep_file {
         find_elf::FindElf::from_file(dep_file)?
     } else {
         // Locate proto dir, either as passed in via CLI or from WS env
-        let proto = cfg
+        let proto = state
             .opts
             .dep_dir
             .as_ref()
             .cloned()
-            .or_else(|| cfg.ws.clone())
+            .or_else(|| state.ws.clone())
             .filter(|d| d.is_dir());
 
         if let Some(dir) = proto {
@@ -281,7 +265,7 @@ fn alt_object_config(cfg: &mut Config) -> Result<()> {
             }
         };
 
-        if cfg.exre_check(ExcRtime::NoCrleAlt, &item.path) {
+        if state.exre_check(ExcRtime::NoCrleAlt, &item.path) {
             continue;
         }
 
@@ -303,13 +287,13 @@ fn alt_object_config(cfg: &mut Config) -> Result<()> {
         }
     }
 
-    cfg.crle32 = build_crle_conf(crle32, false);
-    cfg.crle64 = build_crle_conf(crle64, true);
+    state.crle32 = build_crle_conf(crle32, false);
+    state.crle64 = build_crle_conf(crle64, true);
 
     Ok(())
 }
 
-fn prep(opts: Opts) -> Result<Config> {
+fn prep(opts: Opts) -> Result<AppState> {
     // Change dir if requested
     if let Some(path) = &opts.relative_outdir {
         env::set_current_dir(path.as_path())?;
@@ -317,7 +301,7 @@ fn prep(opts: Opts) -> Result<Config> {
 
     let info = opts.info_file.as_ref().map(File::create).transpose()?;
     let err = opts.err_file.as_ref().map(File::create).transpose()?;
-    let mut cfg = Config::new(
+    let mut state = AppState::new(
         opts,
         env::var("CODEMSG_WS").ok().map(PathBuf::from),
         info,
@@ -325,12 +309,12 @@ fn prep(opts: Opts) -> Result<Config> {
     );
 
     // load exception lists
-    cfg.exre = load_exceptions(&cfg.opts, cfg.ws.as_ref())?;
+    state.exre = load_exceptions(&state.opts, state.ws.as_ref())?;
 
     // generate crle configs
-    alt_object_config(&mut cfg)?;
+    alt_object_config(&mut state)?;
 
-    Ok(cfg)
+    Ok(state)
 }
 
 const MODE_SUID_GUID: u32 = 0o6000;
@@ -347,6 +331,9 @@ impl Results {
     fn push_info(&mut self, info: String) {
         self.info.push(info)
     }
+    fn is_empty(&self) -> bool {
+        self.info.is_empty() && self.errors.is_empty()
+    }
     fn squash(self) -> Option<Self> {
         if self.info.is_empty() && self.errors.is_empty() {
             None
@@ -360,7 +347,7 @@ impl Results {
     }
 }
 
-fn check_ldd(cfg: &mut Config, path: &str, full_path: &str) -> Results {
+fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
     let mut cmd = Command::new("ldd");
     cmd.arg("-rU");
     //cmd.arg(CRLE stuff);
@@ -435,7 +422,7 @@ fn check_ldd(cfg: &mut Config, path: &str, full_path: &str) -> Results {
             }
             missing = match missing {
                 Some(1) => {
-                    if !cfg.opts.produce_oneliner {
+                    if !cfg.oneliner_output {
                         res.push_err("continued ...");
                     }
                     None
@@ -504,7 +491,7 @@ fn check_ldd(cfg: &mut Config, path: &str, full_path: &str) -> Results {
 }
 
 fn process_file(
-    cfg: &mut Config,
+    cfg: &Config,
     prefix: &str,
     path: &str,
     obj: Object,
@@ -576,7 +563,7 @@ fn process_file(
 
     // Determine whether this ELF executable or shared object has a conforming
     // mcs(1) comment section.
-    if cfg.opts.process_mcs && !cfg.exre_check(ExcRtime::NoComment, path) {
+    if cfg.process_mcs && !cfg.exre_check(ExcRtime::NoComment, path) {
         let mut conform = false;
         if let Some(comment_data) = find_shdr(&elf, ".comment")
             .map(elf::SectionHeader::file_range)
@@ -737,14 +724,14 @@ fn process_file(
                 "NEEDED={}\t<forbidden dependency, missing -nodefaultlibs?>",
                 need
             ));
-        } else if cfg.opts.produce_dyn_table {
+        } else if cfg.process_dyn_table {
             res.push_info(format!("NEEDED={}", need));
         }
     }
 
     // No objects released to a customer should have any .stabs sections
     // remaining, they should be stripped.
-    if cfg.opts.process_stab
+    if cfg.process_stab
         && has_stabs
         && !cfg.exre_check(ExcRtime::Forbidden, path)
     {
@@ -766,28 +753,57 @@ fn process_file(
     // If -v was specified, and the object has a version definition
     // section, generate output showing each public symbol and the
     // version it belongs to.
-    if obj.has_verdef && cfg.opts.process_verdef {
+    if obj.has_verdef && cfg.process_verdef {
         // ProcVerdef($FullPath, $RelPath)
     }
     Ok(res.squash())
 }
 
-fn process(cfg: &mut Config, fe: FindElf) {
+fn format_results(state: &mut AppState, obj: &str, res: &Results) {
+    let oneliner = state.opts.oneliner_output;
+    let combined = state.output_combined;
+
+    let write_hdr = |fp: &mut Box<dyn Write>| {
+        let _ = write!(fp, "==== {} ====\n", obj);
+    };
+
+    if combined && !oneliner {
+        // Write a shared header for combined output
+        write_hdr(&mut state.fp_info);
+    }
+
+    for (kind_fp, kind_res) in
+        [(&mut state.fp_err, &res.errors), (&mut state.fp_info, &res.info)]
+    {
+        if !kind_res.is_empty() {
+            if !combined && !oneliner {
+                write_hdr(kind_fp);
+            }
+            for msg in kind_res.iter() {
+                if oneliner {
+                    let _ = write!(kind_fp, "{}: {}\n", obj, msg);
+                } else {
+                    let _ = write!(kind_fp, "\t{}\n", msg);
+                }
+            }
+        }
+    }
+}
+
+fn process(state: &mut AppState, fe: FindElf) {
     let prefix = fe.prefix().unwrap();
+    let cfg = state.get_config();
     let mut results = BTreeMap::new();
     for item in fe {
         if let Record::Object(o) = item.record {
-            if let Ok(Some(res)) = process_file(cfg, &prefix, &item.path, o) {
+            if let Ok(Some(res)) = process_file(&cfg, &prefix, &item.path, o) {
                 results.insert(item.path, res);
             }
         }
     }
     for (obj, res) in results.iter() {
-        for msg in res.errors.iter() {
-            cfg.msg_err(obj, msg);
-        }
-        for msg in res.info.iter() {
-            cfg.msg_info(obj, msg);
+        if !res.is_empty() {
+            format_results(state, obj, res);
         }
     }
 }
