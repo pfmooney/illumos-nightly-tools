@@ -134,7 +134,11 @@ fn parse_item(buf: &str) -> Option<Item> {
             let path = fields.next()?.to_string();
             Some(Item {
                 path,
-                record: Record::Object(Object { is_64bit, has_verdef, is_exec }),
+                record: Record::Object(Object {
+                    is_64bit,
+                    has_verdef,
+                    is_exec,
+                }),
             })
         }
         "ALIAS" => {

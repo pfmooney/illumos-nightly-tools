@@ -346,9 +346,8 @@ pub(crate) fn process_file(
             .set_permissions(PermissionsExt::from_mode(0o0555))?;
         let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
 
-        let msg_sanitize = |m: String| -> String {
-            m.replace(lddtmp_path, path)
-        };
+        let msg_sanitize =
+            |m: String| -> String { m.replace(lddtmp_path, path) };
 
         check_ldd(cfg, &path, &lddtmp_path, msg_sanitize)
     };
