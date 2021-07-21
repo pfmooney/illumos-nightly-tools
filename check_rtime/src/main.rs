@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, Result, Write};
-use std::io::{BufRead, BufReader};
-use std::os::unix::fs::MetadataExt;
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -354,161 +354,153 @@ impl Results {
             Some(self)
         }
     }
+    fn append(&mut self, mut other: Self) {
+        self.info.append(&mut other.info);
+        self.errors.append(&mut other.errors);
+    }
 }
 
-fn check_ldd(res: &mut Results, full_path: &str) {
-    // Take note of SUID/SGID
-    // let is_secure = (meta.mode() & MODE_SUID_GUID) != 0;
+fn check_ldd(cfg: &mut Config, path: &str, full_path: &str) -> Results {
+    let mut cmd = Command::new("ldd");
+    cmd.arg("-rU");
+    //cmd.arg(CRLE stuff);
+    cmd.arg(full_path);
+    cmd.stdin(Stdio::null());
 
-    // 	if ($Secure) {
-    // 		# The execution of a secure application over an nfs file
-    // 		# system mounted nosuid will result in warning messages
-    // 		# being sent to /var/adm/messages.  As this type of
-    // 		# environment can occur with root builds, move the file
-    // 		# being investigated to a safe place first.  In addition
-    // 		# remove its secure permission so that it can be
-    // 		# influenced by any alternative dependency mappings.
-
-    // 		my $File = $RelPath;
-    // 		$File =~ s!^.*/!!;      # basename
-
-    // 		my($TmpPath) = "$Tmpdir/$File";
-
-    // 		system('cp', $LDDFullPath, $TmpPath);
-    // 		chmod 0777, $TmpPath;
-    // 		$LDDFullPath = $TmpPath;
-    // 	}
+    let out = cmd.output().unwrap();
 
     // 	# Use ldd(1) to determine the objects relocatability and use.
     // 	# By default look for all unreferenced dependencies.  However,
     // 	# some objects have legitimate dependencies that they do not
     // 	# reference.
-    // 	if ($LddNoU) {
-    // 		$Lddopt = "-ru";
-    // 	} else {
-    // 		$Lddopt = "-rU";
-    // 	}
-    // 	@Ldd = split(/\n/, `ldd $Lddopt $Env $LDDFullPath 2>&1`);
+    // 	@Ldd = split(/\n/, `ldd -rU $Env $LDDFullPath 2>&1`);
     // 	if ($Secure) {
     // 		unlink $LDDFullPath;
     // 	}
     // }
 
-    // $Val = 0;
-    // $Sym = 5;
-    // $UnDep = 1;
+    // Number of missing symbols we will complain about before gagging the
+    // output to cut down on excess noise.
+    let mut missing: Option<usize> = Some(5);
+    let mut check_undep = true;
+    let mut res = Results::default();
 
-    // foreach my $Line (@Ldd) {
+    for (nr, line) in BufReader::new(out.stdout.chain(&out.stderr[..]))
+        .lines()
+        .map(Result::unwrap)
+        .enumerate()
+    {
+        if nr == 0 {
+            // Make sure ldd(1) worked.
+            if line.contains("usage:") {
+                res.push_err(&format!("{}\t<old ldd(1)?>", line));
+            } else if line.contains("execution failed") {
+                res.push_err(&line);
+            }
+            // It's possible this binary can't be executed, ie. we've
+            // found a sparc binary while running on an intel system,
+            // or a sparcv9 binary on a sparcv7/8 system.
+            if line.contains("wrong class") {
+                res.push_err("has wrong class or data encoding");
+                continue;
+            }
 
-    // 	if ($Val == 0) {
-    // 		$Val = 1;
-    // 		# Make sure ldd(1) worked.  One possible failure is that
-    // 		# this is an old ldd(1) prior to -e addition (4390308).
-    // 		if ($Line =~ /usage:/) {
-    // 			$Line =~ s/$/\t<old ldd(1)?>/;
-    // 			onbld_elfmod::OutMsg($ErrFH, $ErrTtl,
-    // 			    $RelPath, $Line);
-    // 			last;
-    // 		} elsif ($Line =~ /execution failed/) {
-    // 			onbld_elfmod::OutMsg($ErrFH, $ErrTtl,
-    // 			    $RelPath, $Line);
-    // 			last;
-    // 		}
+            // Historically, ldd(1) likes executable objects to have
+            // their execute bit set.
+            if line.contains("not executable") {
+                res.push_err("is not executable");
+                continue;
+            }
+        }
 
-    // 		# It's possible this binary can't be executed, ie. we've
-    // 		# found a sparc binary while running on an intel system,
-    // 		# or a sparcv9 binary on a sparcv7/8 system.
-    // 		if ($Line =~ /wrong class/) {
-    // 			onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath,
-    // 			    "has wrong class or data encoding");
-    // 			next;
-    // 		}
+        // Look for "file" or "versions" that aren't found.  Note that
+        // these lines will occur before we find any symbol referencing
+        // errors.
+        if missing.is_some() && line.contains("not found") {
+            if line.contains("file not found)") {
+                res.push_err(&format!("{}\t<no -zdefs?>", line));
+            } else {
+                res.push_err(&line);
+            }
+            continue;
+        }
+        // Look for relocations whose symbols can't be found.  Note, we
+        // only print out the first 5 relocations for any file as this
+        // output can be excessive.
+        if missing.is_some() && line.contains("symbol not found") {
+            // Determine if this file is allowed undefined references.
+            if cfg.exre_check(ExcRtime::UndefRef, path) {
+                missing = None;
+                continue;
+            }
+            missing = match missing {
+                Some(1) => {
+                    if !cfg.opts.produce_oneliner {
+                        res.push_err("continued ...");
+                    }
+                    None
+                }
+                Some(x) => {
+                    // Just print the symbol name.
+                    res.push_err(&format!("{}\t<no -zdefs>?", line));
+                    Some(x - 1)
+                }
+                None => None,
+            };
+            continue;
+        }
 
-    // 		# Historically, ldd(1) likes executable objects to have
-    // 		# their execute bit set.
-    // 		if ($Line =~ /not executable/) {
-    // 			onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath,
-    // 			    "is not executable");
-    // 			next;
-    // 		}
-    // 	}
+        // Look for any unused search paths.
+        if line.contains("unused search path=") {
+            if cfg.exre_check(ExcRtime::UnusedRpath, &line) {
+                continue;
+            }
+            // if ($Secure) {
+            //     $Line =~ s!$Tmpdir/!!;
+            // }
+            // $Line =~ s/^[ \t]*(.*)/\t$1\t<remove search path?>/;
+            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
+            todo!("XXX FINISH ME");
+            //continue;
+        }
 
-    // 	# Look for "file" or "versions" that aren't found.  Note that
-    // 	# these lines will occur before we find any symbol referencing
-    // 	# errors.
-    // 	if (($Sym == 5) && ($Line =~ /not found\)/)) {
-    // 		if ($Line =~ /file not found\)/) {
-    // 			$Line =~ s/$/\t<no -zdefs?>/;
-    // 		}
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-    // 		next;
-    // 	}
-    // 	# Look for relocations whose symbols can't be found.  Note, we
-    // 	# only print out the first 5 relocations for any file as this
-    // 	# output can be excessive.
-    // 	if ($Sym && ($Line =~ /symbol not found/)) {
-    // 		# Determine if this file is allowed undefined
-    // 		# references.
-    // 		if (($Sym == 5) && defined($EXRE_undef_ref) &&
-    // 		    ($RelPath =~ $EXRE_undef_ref)) {
-    // 			$Sym = 0;
-    // 			next;
-    // 		}
-    // 		if ($Sym-- == 1) {
-    // 			onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath,
-    // 			    "continued ...") if !$opt{o};
-    // 			next;
-    // 		}
-    // 		# Just print the symbol name.
-    // 		$Line =~ s/$/\t<no -zdefs?>/;
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-    // 		next;
-    // 	}
-    // 	# Look for any unused search paths.
-    // 	if ($Line =~ /unused search path=/) {
-    // 		next if defined($EXRE_unused_rpath) &&
-    // 		    ($Line =~ $EXRE_unused_rpath);
+        // Look for unreferenced dependencies.  Note, if any unreferenced
+        // objects are ignored, then set $UnDep so as to suppress any
+        // associated unused-object messages.
+        if line.contains("unreferenced object=") {
+            if cfg.exre_check(ExcRtime::UnrefObj, &line) {
+                check_undep = false;
+                continue;
+            }
+            // if ($Secure) {
+            //     $Line =~ s!$Tmpdir/!!;
+            // }
+            // $Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
+            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
+            // next;
+            todo!("XXX FINISH ME");
+            //continue;
+        }
 
-    // 		if ($Secure) {
-    // 			$Line =~ s!$Tmpdir/!!;
-    // 		}
-    // 		$Line =~ s/^[ \t]*(.*)/\t$1\t<remove search path?>/;
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-    // 		next;
-    // 	}
+        //  Look for any unused dependencies.
+        if check_undep && line.contains("unused") {
+            // Skip if object is allowed to have unused dependencies
+            if cfg.exre_check(ExcRtime::UnusedDeps, path) {
+                continue;
+            }
 
-    // 	# Look for unreferenced dependencies.  Note, if any unreferenced
-    // 	# objects are ignored, then set $UnDep so as to suppress any
-    // 	# associated unused-object messages.
-    // 	if ($Line =~ /unreferenced object=/) {
-    // 		if (defined($EXRE_unref_obj) &&
-    // 		    ($Line =~ $EXRE_unref_obj)) {
-    // 			$UnDep = 0;
-    // 			next;
-    // 		}
-    // 		if ($Secure) {
-    // 			$Line =~ s!$Tmpdir/!!;
-    // 		}
-    // 		$Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-    // 		next;
-    // 	}
-    // 	# Look for any unused dependencies.
-    // 	if ($UnDep && ($Line =~ /unused/)) {
-    // 		# Skip if object is allowed to have unused dependencies
-    // 		next if defined($EXRE_unused_deps) &&
-    // 		    ($RelPath =~ $EXRE_unused_deps);
+            // Skip if dependency is always allowed to be unused
+            if cfg.exre_check(ExcRtime::UnusedObj, &line) {
+                continue;
+            }
 
-    // 		# Skip if dependency is always allowed to be unused
-    // 		next if defined($EXRE_unused_obj) &&
-    // 		    ($Line =~ $EXRE_unused_obj);
-
-    // 		$Line =~ s!$Tmpdir/!! if $Secure;
-    // 		$Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
-    // 		onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
-    // 		next;
-    // 	}
-    // }
+            // $Line =~ s!$Tmpdir/!! if $Secure;
+            // $Line =~ s/^[ \t]*(.*)/$1\t<remove lib or -zignore?>/;
+            // onbld_elfmod::OutMsg($ErrFH, $ErrTtl, $RelPath, $Line);
+            continue;
+        }
+    }
+    res
 }
 
 fn process_file(
@@ -620,8 +612,6 @@ fn process_file(
             );
         }
     }
-    // @Ldd = 0;
-
     // Having caught any static executables in the mcs(1) check and non-
     // executable stack definition check, continue with dynamic objects
     // from now on.
@@ -633,9 +623,28 @@ fn process_file(
         return Ok(res.squash());
     }
 
-    // # Use ldd unless its a 64-bit object and we lack the hardware.
-    // if (($Class == 32) || $Ena64) {
-    // 	my $LDDFullPath = $FullPath;
+    // Perform ldd(1) checks
+    let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
+        check_ldd(cfg, &path, &full_path)
+    } else {
+        // The execution of a secure application over an nfs file
+        // system mounted nosuid will result in warning messages
+        // being sent to /var/adm/messages.  As this type of
+        // environment can occur with root builds, move the file
+        // being investigated to a safe place first.  In addition
+        // remove its secure permission so that it can be
+        // influenced by any alternative dependency mappings.
+
+        // Copy into a temp file where we control the permissions
+        let mut lddtmp = NamedTempFile::new()?;
+        lddtmp.write_all(rodata)?;
+        lddtmp
+            .as_file_mut()
+            .set_permissions(PermissionsExt::from_mode(0o0555))?;
+
+        check_ldd(cfg, &path, &lddtmp.path().to_string_lossy())
+    };
+    res.append(ldd_res);
 
     let (mut has_sunreloc, mut has_stabs, mut has_symtab, mut has_symsort) =
         (false, false, false, false);
