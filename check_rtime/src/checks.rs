@@ -386,7 +386,7 @@ pub(crate) fn process_file(
         // Determine if this file is allowed text relocations.
         if info.textrel {
             if !cfg.excepted(ExcRtime::TextRel, path) {
-                res.push_err("TEXTREL .dynamic tag\t\t\t<no -Kpic?>");
+                res.push_err("TEXTREL .dynamic tag\t\t\t<no -fpic?>");
             }
         }
 
