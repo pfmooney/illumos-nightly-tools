@@ -11,6 +11,8 @@
 // Copyright 2021 Oxide Computer Company
 //
 
+#![allow(clippy::style)]
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
@@ -369,7 +371,7 @@ fn format_results(state: &mut AppState, obj: &str, res: &Results) {
     let combined = state.output_combined;
 
     let write_hdr = |fp: &mut Box<dyn Write>| {
-        let _ = write!(fp, "==== {} ====\n", obj);
+        let _ = writeln!(fp, "==== {} ====", obj);
     };
 
     if combined && !oneliner {
@@ -386,9 +388,9 @@ fn format_results(state: &mut AppState, obj: &str, res: &Results) {
             }
             for msg in kind_res.iter() {
                 if oneliner {
-                    let _ = write!(kind_fp, "{}: {}\n", obj, msg);
+                    let _ = writeln!(kind_fp, "{}: {}", obj, msg);
                 } else {
-                    let _ = write!(kind_fp, "\t{}\n", msg);
+                    let _ = writeln!(kind_fp, "\t{}", msg);
                 }
             }
         }

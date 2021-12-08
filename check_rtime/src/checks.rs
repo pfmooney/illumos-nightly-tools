@@ -375,7 +375,7 @@ pub(crate) fn process_file(
         const MODE_SUID_GUID: u32 = 0o6000;
         let is_rel = obj.kind == Kind::Rel;
         let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
-            check_ldd(cfg, &path, &full_path, is_rel, has_kmod)
+            check_ldd(cfg, path, &full_path, is_rel, has_kmod)
         } else {
             // The execution of a secure application over an nfs file system
             // mounted nosuid will result in warning messages being sent to
@@ -392,7 +392,7 @@ pub(crate) fn process_file(
                 .set_permissions(PermissionsExt::from_mode(0o0555))?;
             let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
 
-            check_ldd(cfg, &path, &lddtmp_path, is_rel, has_kmod)
+            check_ldd(cfg, path, lddtmp_path, is_rel, has_kmod)
         };
         res.append(ldd_res);
     }

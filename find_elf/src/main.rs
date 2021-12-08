@@ -11,6 +11,8 @@
 // Copyright 2021 Oxide Computer Company
 //
 
+#![allow(clippy::style)]
+
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
 use std::io::{Error, ErrorKind, Result};
@@ -191,13 +193,13 @@ where
     // Traverse regular (non-symlink) directories first
     while let Some(item) = dirq.pop() {
         let (mut dirs, mut links) = dir_children(item, each_file, each_linked)?;
-        dirq.extend(dirs.drain(..));
-        linkq.extend(links.drain(..));
+        dirq.append(&mut dirs);
+        linkq.append(&mut links);
     }
     // Walk anything behind a symlink (directory or otherwise) after
     while let Some((path, link_target)) = linkq.pop() {
         let mut children = linked_children(path, link_target, each_linked)?;
-        linkq.extend(children.drain(..));
+        linkq.append(&mut children);
     }
     Ok(())
 }
@@ -257,7 +259,7 @@ fn collate_results(
 
             let mut names = hard_links;
             if let Some(mut entry_aliases) = alias_list.remove(&id) {
-                names.extend(entry_aliases.drain(..));
+                names.append(&mut entry_aliases);
                 names.sort_unstable();
             }
             result.insert(k, (detail, names));
@@ -345,8 +347,7 @@ fn main() {
                 return;
             }
 
-            let mut hard_links = Vec::new();
-            hard_links.push(p);
+            let hard_links = vec![p];
             file_detail.insert(id, (res, hard_links));
         }
     };
@@ -355,8 +356,7 @@ fn main() {
         if let Some(entry) = alias_list.get_mut(&id) {
             entry.push(p);
         } else {
-            let mut list: Vec<PathBuf> = Vec::new();
-            list.push(p);
+            let list: Vec<PathBuf> = vec![p];
             alias_list.insert(id, list);
         }
     };
