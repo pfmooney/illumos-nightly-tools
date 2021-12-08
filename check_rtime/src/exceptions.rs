@@ -25,6 +25,7 @@ pub enum ExcRtime {
     UnusedObj,
     UnusedRpath,
     NoComment,
+    NotKmod,
 }
 impl ExcRtime {
     fn try_from_ident(name: &str) -> Option<Self> {
@@ -47,6 +48,7 @@ impl ExcRtime {
             "UNUSED_OBJ" => Some(ExcRtime::UnusedObj),
             "UNUSED_RPATH" => Some(ExcRtime::UnusedRpath),
             "NO_COMMENT" => Some(ExcRtime::NoComment),
+            "NOT_KMOD" => Some(ExcRtime::NotKmod),
             _ => None,
         }
     }

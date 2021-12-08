@@ -255,7 +255,7 @@ fn alt_object_config(state: &mut AppState) -> Result<()> {
     for item in fe {
         let obj = match item.record {
             find_elf::Record::Object(o) => {
-                if !o.is_exec {
+                if o.kind != find_elf::Kind::Dyn {
                     last_dyn = None;
                     continue;
                 }

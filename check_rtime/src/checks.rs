@@ -14,6 +14,7 @@ use goblin::elf::{self, Elf};
 use tempfile::NamedTempFile;
 
 const SYMINFO_FLG_DIRECTBIND: u16 = 0x10;
+const DT_SUNW_KMOD: u64 = 0x60000027;
 
 #[repr(C)]
 struct Syminfo {
@@ -68,7 +69,20 @@ impl<R: Read> Read for CommentFilter<R> {
     }
 }
 
-fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
+// Blunt-force test to check if a file is executable
+fn file_is_executable(path: &str) -> bool {
+    const MODE_EXEC_ANY: u32 = 0o111;
+    let mode = std::fs::metadata(path).map(|m| m.mode()).unwrap_or(0);
+    mode & MODE_EXEC_ANY != 0
+}
+
+fn check_ldd(
+    cfg: &Config,
+    path: &str,
+    full_path: &str,
+    is_rel: bool,
+    has_kmod: bool,
+) -> Results {
     let mut cmd = Command::new("ldd");
     cmd.arg("-rU");
     if let Some(env) = cfg.crle_env() {
@@ -109,7 +123,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
             // Historically, ldd(1) likes executable objects to have their
             // execute bit set.
-            if line.contains("not executable") {
+            if (!is_rel || has_kmod) && !file_is_executable(full_path) {
                 res.push_err("is not executable");
                 continue;
             }
@@ -117,7 +131,7 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
 
         // Look for "file" or "versions" that aren't found.  Note that these
         // lines will occur before we find any symbol referencing errors.
-        if missing_sym == 0 && line.contains("not found)") {
+        if !is_rel && missing_sym == 0 && line.contains("not found)") {
             if line.contains("file not found)") {
                 res.push_err(&format!("{}\t<no -zdefs?>", line));
             } else {
@@ -129,7 +143,10 @@ fn check_ldd(cfg: &Config, path: &str, full_path: &str) -> Results {
         // Look for relocations whose symbols can't be found.  Note, we only
         // print out the first 5 relocations for any file as this output can be
         // excessive.
-        if missing_sym < MISSING_LIMIT && line.contains("symbol not found") {
+        if !is_rel
+            && missing_sym < MISSING_LIMIT
+            && line.contains("symbol not found")
+        {
             // Determine if this file is allowed undefined references.
             if cfg.excepted(ExcRtime::UndefRef, path) {
                 missing_sym = MISSING_LIMIT;
@@ -259,7 +276,7 @@ pub(crate) fn process_file(
     }
 
     // Applications should contain a non-executable stack definition.
-    if obj.is_exec
+    if obj.kind == Kind::Exec
         && !elf
             .program_headers
             .iter()
@@ -321,29 +338,51 @@ pub(crate) fn process_file(
         return Ok(res.squash());
     }
 
-    // Perform ldd(1) checks
-    const MODE_SUID_GUID: u32 = 0o6000;
-    let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
-        check_ldd(cfg, &path, &full_path)
-    } else {
-        // The execution of a secure application over an nfs file system mounted
-        // nosuid will result in warning messages being sent to
-        // /var/adm/messages.  As this type of environment can occur with root
-        // builds, move the file being investigated to a safe place first.  In
-        // addition, remove its secure permission so that it can be influenced by
-        // any alternative dependency mappings.
+    // Is there a DT_SUNW_KMOD in the .dynamic section
+    let has_kmod = elf
+        .dynamic
+        .as_ref()
+        .map(|edyn| {
+            edyn.dyns.iter().any(|d| d.d_tag == DT_SUNW_KMOD && d.d_val != 0)
+        })
+        .unwrap_or(false);
 
-        // Copy into a temp file where we control the permissions
-        let mut lddtmp = NamedTempFile::new()?;
-        lddtmp.write_all(rodata)?;
-        lddtmp
-            .as_file_mut()
-            .set_permissions(PermissionsExt::from_mode(0o0555))?;
-        let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
+    // A probable kmod should be tagged
+    if obj.kind == Kind::Rel
+        && !has_kmod
+        && (path.starts_with("kernel/") || path.contains("/kernel/"))
+    {
+        if !cfg.excepted(ExcRtime::NotKmod, path) {
+            res.push_err("kernel object should be linked -ztype=kmod");
+        }
+    }
 
-        check_ldd(cfg, &path, &lddtmp_path)
-    };
-    res.append(ldd_res);
+    // Perform ldd(1) checks on dynamic objects
+    if obj.kind != Kind::Rel {
+        const MODE_SUID_GUID: u32 = 0o6000;
+        let is_rel = obj.kind == Kind::Rel;
+        let ldd_res = if (meta.mode() & MODE_SUID_GUID) == 0 {
+            check_ldd(cfg, &path, &full_path, is_rel, has_kmod)
+        } else {
+            // The execution of a secure application over an nfs file system
+            // mounted nosuid will result in warning messages being sent to
+            // /var/adm/messages.  As this type of environment can occur with
+            // root builds, move the file being investigated to a safe place
+            // first.  In addition, remove its secure permission so that it can
+            // be influenced by any alternative dependency mappings.
+
+            // Copy into a temp file where we control the permissions
+            let mut lddtmp = NamedTempFile::new()?;
+            lddtmp.write_all(rodata)?;
+            lddtmp
+                .as_file_mut()
+                .set_permissions(PermissionsExt::from_mode(0o0555))?;
+            let lddtmp_path: &str = &lddtmp.path().to_string_lossy();
+
+            check_ldd(cfg, &path, &lddtmp_path, is_rel, has_kmod)
+        };
+        res.append(ldd_res);
+    }
 
     let (mut has_sunreloc, mut has_stabs, mut has_symtab, mut has_symsort) =
         (false, false, false, false);
@@ -384,7 +423,7 @@ pub(crate) fn process_file(
         }
 
         // Determine if this file is allowed text relocations.
-        if info.textrel {
+        if info.textrel && obj.kind != Kind::Rel {
             if !cfg.excepted(ExcRtime::TextRel, path) {
                 res.push_err("TEXTREL .dynamic tag\t\t\t<no -fpic?>");
             }
@@ -396,7 +435,11 @@ pub(crate) fn process_file(
         // A shared object, that contains non-plt relocations, should have a
         // combined relocation section indicating it was built with
         // "-z combreloc".
-        if !obj.is_exec && relsz != 0 && relsz != pltsz && !has_sunreloc {
+        if obj.kind == Kind::Dyn
+            && relsz != 0
+            && relsz != pltsz
+            && !has_sunreloc
+        {
             res.push_err(".SUNW_reloc section missing\t\t<no -zcombreloc?>");
         }
 

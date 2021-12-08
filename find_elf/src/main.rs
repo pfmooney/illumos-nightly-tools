@@ -267,6 +267,7 @@ fn format_output(
         let etype = match detail.etype {
             header::ET_DYN => "DYN",
             header::ET_EXEC => "EXEC",
+            header::ET_REL => "REL",
             _ => continue,
         };
         let obj_path = if strip_prefix {
